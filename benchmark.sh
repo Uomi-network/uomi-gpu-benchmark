@@ -2,7 +2,7 @@
 # =========================================================
 # GPU Benchmark for UOMI Network
 # A simple script to evaluate GPUs for AI inference
-# Usage: curl -sSL https://raw.githubusercontent.com/user/uomi-benchmark/main/gpu-benchmark.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/uomi-network/gpu-benchmark/main/benchmark.sh | bash
 # =========================================================
 
 set -e
@@ -49,7 +49,7 @@ check_requirements() {
   # Try to set up pip directly
   if $SYS_PYTHON_CMD -m pip --version &> /dev/null; then
     # Test if we can install packages
-    if $SYS_PYTHON_CMD -m pip install --quiet --user tqdm &> /dev/null; then
+    if $SYS_PYTHON_CMD -m pip install --quiet --user tqdm 2>/dev/null; then
       # Direct pip works, use it
       PYTHON_CMD=$SYS_PYTHON_CMD
       PIP_CMD="$PYTHON_CMD -m pip"
@@ -184,16 +184,27 @@ def benchmark_gpu():
     gpu_count = torch.cuda.device_count()
     total_gpu_memory = 0
     best_tflops = 0
+    sum_tflops = 0
     size_results = []
+    
+    # Track individual GPU performances
+    gpu_performances = []
 
     for device_id in range(gpu_count):
         print(f"\n📊 Testing GPU {device_id}: {torch.cuda.get_device_name(device_id)}")
         device = torch.device(f"cuda:{device_id}")
         torch.cuda.synchronize(device)
+        
+        # Get GPU memory
+        gpu_memory = torch.cuda.get_device_properties(device_id).total_memory / (1024**3)
+        total_gpu_memory += gpu_memory
 
         # Test tensor calculations on GPU with increasing dimensions
         tensor_sizes = [2000, 4000, 8000, 12000, 16000]
-        iterations = 10
+        iterations = 5  # Reduced for faster testing
+        
+        # Track best performance for this GPU
+        gpu_best_tflops = 0
 
         # Warm-up
         warmup = torch.rand(1000, 1000, device=device)
@@ -233,9 +244,9 @@ def benchmark_gpu():
                     "tflops": tflops
                 })
                 
-                # Update best TFLOPS
-                if tflops > best_tflops:
-                    best_tflops = tflops
+                # Update best TFLOPS for this GPU
+                if tflops > gpu_best_tflops:
+                    gpu_best_tflops = tflops
                 
                 # Free memory
                 del a, b, c
@@ -245,17 +256,50 @@ def benchmark_gpu():
                 # Likely OOM, stop here
                 print(f"  ⚠️  Unable to complete test with size {tensor_size}: {e}")
                 break
+        
+        # Store this GPU's performance
+        gpu_performances.append({
+            "device_id": device_id,
+            "name": torch.cuda.get_device_name(device_id),
+            "memory_gb": gpu_memory,
+            "best_tflops": gpu_best_tflops
+        })
+        
+        # Update global best TFLOPS
+        if gpu_best_tflops > best_tflops:
+            best_tflops = gpu_best_tflops
+            
+        # Add to sum for multi-GPU calculation
+        sum_tflops += gpu_best_tflops
 
-        # Accumulate total GPU memory
-        total_gpu_memory += torch.cuda.get_device_properties(device_id).total_memory / (1024**3)
+    # Calculate effective TFLOPS for multi-GPU setup
+    # We use a scaling factor that represents real-world efficiency gains
+    if gpu_count > 1:
+        # For same GPU models, use sum with efficiency factor
+        if len(set([gpu["name"] for gpu in gpu_performances])) == 1:
+            # Same GPU models - better parallelism
+            effective_tflops = sum_tflops * 0.9  # 90% efficiency for homogeneous setup
+        else:
+            # Mixed GPU models - lower parallelism efficiency
+            effective_tflops = sum_tflops * 0.8  # 80% efficiency for heterogeneous setup
+            
+        # Take the highest of best single GPU or effective multi-GPU
+        combined_tflops = max(best_tflops, effective_tflops)
+    else:
+        # Single GPU - use its TFLOPS directly
+        combined_tflops = best_tflops
 
     # Calculate GPU score
     if size_results:
-        # Score based on performance and memory
-        reference_tflops = 15.0  # 15 TFLOPS as reference for max score
-        reference_memory = 24.0 * gpu_count  # 24 GB per GPU as reference for max score
+        # Reference values calibrated to give A100 and 2x4090 comparable scores
+        reference_tflops = 40.0  # Higher reference for proper scaling
+        reference_memory = 40.0  # Reference memory (40GB like A100 or 2x4090)
         
-        perf_score = min(70, (best_tflops / reference_tflops) * 70)
+        # Score components
+        # For performance, use combined_tflops which accounts for multi-GPU properly
+        perf_score = min(70, (combined_tflops / reference_tflops) * 70)
+        
+        # For memory, use total available memory across all GPUs
         mem_score = min(30, (total_gpu_memory / reference_memory) * 30)
         
         gpu_score = perf_score + mem_score
@@ -265,13 +309,18 @@ def benchmark_gpu():
     # Parameters for LLM inference
     memory_per_param = 2.0  # Bytes per parameter (FP16)
     
-    # Base calculation
+    # Base calculation - raw memory capacity
     raw_estimated_params = (total_gpu_memory * 1024**3 * 0.7) / memory_per_param / 1e9
     
     # Apply scaling based on GPU count for tensor parallelism
     if gpu_count > 1:
         # For multi-GPU setups, tensor parallelism is more efficient
-        scaling_factor = 1.7  # Better than linear due to tensor parallelism
+        # Higher scaling factor for identical GPUs
+        if len(set([gpu["name"] for gpu in gpu_performances])) == 1:
+            scaling_factor = 1.8  # Better scaling for identical GPUs
+        else:
+            scaling_factor = 1.6  # Lower scaling for mixed GPUs
+            
         estimated_max_params = int(raw_estimated_params * scaling_factor)
     else:
         estimated_max_params = int(raw_estimated_params)  # In billions
@@ -280,11 +329,14 @@ def benchmark_gpu():
     results["gpu_score"] = gpu_score
     results["raw_metrics"] = {
         "gpu": {
-            "best_tflops": best_tflops if size_results else 0,
+            "best_single_tflops": best_tflops,
+            "sum_tflops": sum_tflops,
+            "combined_tflops": combined_tflops,
             "total_gpu_memory_gb": total_gpu_memory,
             "gpu_count": gpu_count,
-            "perf_score": perf_score if size_results else 0,
-            "mem_score": mem_score if size_results else 0,
+            "gpu_performances": gpu_performances,
+            "perf_score": perf_score,
+            "mem_score": mem_score,
             "size_results": size_results,
             "estimated_max_params_billions": estimated_max_params
         }
@@ -292,13 +344,19 @@ def benchmark_gpu():
     
     print(f"📊 GPU SCORE: {gpu_score:.2f}/100")
     print(f"💾 Total GPU Memory: {total_gpu_memory:.2f} GB")
-    print(f"⚡ Max Performance: {best_tflops:.2f} TFLOPS") if size_results else None
+    
+    if gpu_count > 1:
+        print(f"⚡ Best Single GPU: {best_tflops:.2f} TFLOPS")
+        print(f"⚡ Combined Performance: {combined_tflops:.2f} TFLOPS")
+    else:
+        print(f"⚡ Performance: {best_tflops:.2f} TFLOPS")
+        
     print(f"🧠 Estimated LLM Parameters: up to {estimated_max_params}B")
     
     return results
 
 def check_gpu_specs():
-    """Check if the GPU meets the minimum specs (comparable to RTX 4090)"""
+    """Check if any GPU meets minimum requirements (RTX 3090 or better)"""
     if not torch.cuda.is_available():
         return False
     
@@ -307,13 +365,13 @@ def check_gpu_specs():
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)
         memory_gb = props.total_memory / (1024**3)
-        if memory_gb >= 23:  # Min 23 GB of memory
+        if memory_gb >= 20:  # Min 20 GB of memory (more permissive)
             has_sufficient_gpu = True
             break
     
     if not has_sufficient_gpu:
-        print("❌ No GPU with sufficient memory (min 23 GB required)")
-        print("ℹ️ This benchmark is optimized for RTX 4090 or better")
+        print("❌ No GPU with sufficient memory (min 20 GB required)")
+        print("ℹ️ This benchmark is optimized for RTX 3090/4090 or better")
         return False
     
     return True
@@ -372,7 +430,7 @@ def main():
     print("="*50)
     
     # Additional LLM data if accepted
-    if is_acceptable and "gpu" in results["raw_metrics"]:
+    if "gpu" in results["raw_metrics"]:
         metrics = results["raw_metrics"]["gpu"]
         print("\n🧠 LLM INFERENCE CLASSIFICATION:")
         
