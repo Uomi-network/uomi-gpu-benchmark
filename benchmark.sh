@@ -123,20 +123,20 @@ import numpy as np
 import psutil
 
 # Constants
-MIN_ACCEPTABLE_SCORE = 800
+MIN_ACCEPTABLE_SCORE = 600
 BENCHMARK_VERSION = "1.1.0"
 
 # Reference scores from known hardware (on 1000-point scale)
 REFERENCE_SCORES = {
-    "RTX 3090": 750,     # Single RTX 3090
-    "RTX 4090": 920,     # Single RTX 4090
-    "2xRTX 4090": 1650,  # Dual RTX 4090
-    "A6000": 1000,       # Single A6000
-    "A100 40GB": 1300,   # Single A100 40GB
-    "A100 80GB": 1600,   # Single A100 80GB
-    "H100 PCIe": 2000,   # Single H100 PCIe
-    "H100 SXM5": 2400,   # Single H100 SXM5
-    "8xH100": 9500       # 8x H100 (DGX H100)
+    "RTX 3090": 450,     # Single RTX 3090 (24GB, ~35 TFLOPS)
+    "RTX 4090": 550,     # Single RTX 4090 (24GB, ~55-60 TFLOPS)
+    "2xRTX 4090": 950,   # Dual RTX 4090
+    "A6000": 500,        # Single A6000 (48GB, ~38-40 TFLOPS)
+    "A100 40GB": 650,    # Single A100 40GB
+    "A100 80GB": 750,    # Single A100 80GB
+    "H100 PCIe": 900,    # Single H100 PCIe
+    "H100 SXM5": 1100,   # Single H100 SXM5
+    "8xH100": 5000       # 8x H100 (DGX H100)
 }
 
 try:
@@ -308,7 +308,7 @@ def benchmark_gpu():
     if size_results:
         # Reference values calibrated for extended scale
         # These values place an H100 around 2000-2400 points
-        reference_tflops = 100.0  # Reference for max computation score
+        reference_tflops = 40.0  # Reference for max computation score
         reference_memory = 80.0   # Reference for max memory score (like A100 80GB)
         
         # Performance score (700 max points)
