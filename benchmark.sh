@@ -1,4 +1,9 @@
 #!/bin/bash
+# =========================================================
+# GPU Benchmark for UOMI Network
+# A simple script to evaluate GPUs for AI inference
+# Usage: curl -sSL https://raw.githubusercontent.com/user/uomi-benchmark/main/gpu-benchmark.sh | bash
+# =========================================================
 
 set -e
 echo "========================================"
@@ -9,8 +14,11 @@ echo "========================================"
 MIN_ACCEPTABLE_SCORE=80
 TMP_DIR=$(mktemp -d)
 PYTHON_SCRIPT="${TMP_DIR}/benchmark.py"
+VENV_DIR="${TMP_DIR}/venv"
 RESULT_FILE="${TMP_DIR}/result.json"
 PYTHON_CMD=""
+PIP_CMD=""
+USE_VENV=false
 
 # Verify requirements
 check_requirements() {
@@ -18,16 +26,16 @@ check_requirements() {
   
   # Check if python is installed (try both python3 and python)
   if command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
+    SYS_PYTHON_CMD="python3"
   elif command -v python &> /dev/null; then
-    PYTHON_CMD="python"
+    SYS_PYTHON_CMD="python"
   else
     echo "❌ Python not found. This benchmark requires Python 3.6+"
     exit 1
   fi
   
   # Verify Python version is at least 3.6
-  PY_VERSION=$($PYTHON_CMD -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+  PY_VERSION=$($SYS_PYTHON_CMD -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
   PY_MAJOR=$(echo $PY_VERSION | cut -d. -f1)
   PY_MINOR=$(echo $PY_VERSION | cut -d. -f2)
   
@@ -36,33 +44,59 @@ check_requirements() {
     exit 1
   fi
   
-  # Check pip
-  if $PYTHON_CMD -m pip --version &> /dev/null; then
-    PIP_CMD="$PYTHON_CMD -m pip"
-  else
-    echo "❌ pip not found. The benchmark requires pip to install dependencies"
+  echo "✅ Python requirements met (system has $SYS_PYTHON_CMD $PY_VERSION)"
+  
+  # Try to set up pip directly
+  if $SYS_PYTHON_CMD -m pip --version &> /dev/null; then
+    # Test if we can install packages
+    if $SYS_PYTHON_CMD -m pip install --quiet --user tqdm &> /dev/null; then
+      # Direct pip works, use it
+      PYTHON_CMD=$SYS_PYTHON_CMD
+      PIP_CMD="$PYTHON_CMD -m pip"
+      echo "✅ Using system Python with pip"
+      return 0
+    fi
+  fi
+  
+  # If we're here, we need a virtual environment
+  echo "⚠️ Cannot install packages directly in system Python"
+  echo "🔄 Setting up virtual environment..."
+  
+  # Check if we have venv module
+  if ! $SYS_PYTHON_CMD -c "import venv" &> /dev/null; then
+    echo "❌ Python venv module not found"
+    echo "Please install required packages: sudo apt install python3-venv python3-pip"
     exit 1
   fi
   
-  echo "✅ Basic requirements met (using $PYTHON_CMD)"
+  # Create virtual environment
+  $SYS_PYTHON_CMD -m venv $VENV_DIR
+  
+  # Set path to Python and pip in the virtual environment
+  PYTHON_CMD="${VENV_DIR}/bin/python"
+  PIP_CMD="${VENV_DIR}/bin/pip"
+  
+  # Upgrade pip in the virtual environment
+  $PIP_CMD install --upgrade pip &> /dev/null
+  
+  USE_VENV=true
+  echo "✅ Virtual environment created successfully"
 }
 
 # Install Python dependencies if needed
 install_dependencies() {
-  echo "📦 Checking/installing Python dependencies..."
+  echo "📦 Installing Python dependencies..."
   
   # Required packages
-  PACKAGES="torch numpy psutil json5 tqdm"
+  PACKAGES="torch numpy psutil tqdm"
   
   # Install packages
   for package in $PACKAGES; do
-    if ! $PYTHON_CMD -c "import $package" &> /dev/null; then
-      echo "🔄 Installing $package..."
-      $PIP_CMD install --quiet $package
-    fi
+    echo "🔄 Installing $package..."
+    $PIP_CMD install --quiet $package
   done
   
-  echo "✅ Dependencies installed/verified"
+  echo "✅ Dependencies installed"
 }
 
 # Create the Python script
@@ -215,9 +249,6 @@ def benchmark_gpu():
         # Accumulate total GPU memory
         total_gpu_memory += torch.cuda.get_device_properties(device_id).total_memory / (1024**3)
 
-    # Additional test: inference on a small model (optional)
-    # (Keep the existing inference test code here)
-
     # Calculate GPU score
     if size_results:
         # Score based on performance and memory
@@ -233,7 +264,17 @@ def benchmark_gpu():
 
     # Parameters for LLM inference
     memory_per_param = 2.0  # Bytes per parameter (FP16)
-    estimated_max_params = int((total_gpu_memory * 1024**3 * 0.7) / memory_per_param / 1e9)  # In billions
+    
+    # Base calculation
+    raw_estimated_params = (total_gpu_memory * 1024**3 * 0.7) / memory_per_param / 1e9
+    
+    # Apply scaling based on GPU count for tensor parallelism
+    if gpu_count > 1:
+        # For multi-GPU setups, tensor parallelism is more efficient
+        scaling_factor = 1.7  # Better than linear due to tensor parallelism
+        estimated_max_params = int(raw_estimated_params * scaling_factor)
+    else:
+        estimated_max_params = int(raw_estimated_params)  # In billions
 
     # Final results
     results["gpu_score"] = gpu_score
@@ -261,11 +302,19 @@ def check_gpu_specs():
     if not torch.cuda.is_available():
         return False
     
+    # Check if at least one GPU has sufficient memory
+    has_sufficient_gpu = False
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)
-        if props.total_memory < 23 * 1024**3:  # Min 24 GB di memoria
-            print(f"❌ GPU {i} does not meet the minimum memory requirement: {props.total_memory / 1024**3:.2f} GB")
-            return False
+        memory_gb = props.total_memory / (1024**3)
+        if memory_gb >= 23:  # Min 23 GB of memory
+            has_sufficient_gpu = True
+            break
+    
+    if not has_sufficient_gpu:
+        print("❌ No GPU with sufficient memory (min 23 GB required)")
+        print("ℹ️ This benchmark is optimized for RTX 4090 or better")
+        return False
     
     return True
     
@@ -301,8 +350,9 @@ def main():
     # Run GPU benchmark
     print("\n🚀 STARTING BENCHMARK...")
     if not check_gpu_specs():
-        print("❌ This benchmark requires GPUs with at least 24 GB of memory.")
-        sys.exit(1)
+        print("❌ Hardware requirements not met")
+        return 1
+        
     results = benchmark_gpu()
     
     # Determine acceptability
@@ -329,9 +379,21 @@ def main():
         # Classification based on estimated parameters
         max_params = metrics.get("estimated_max_params_billions", 0)
         
-        if max_params >= 13:
-            print("👍 GOOD GPU")
-     
+        if max_params >= 70:
+            print("🌟 EXCELLENT: Suitable for large models (70B+)")
+            print("   Examples: Claude Opus, GPT-4, Llama 2 70B")
+        elif max_params >= 40:
+            print("✨ GREAT: Suitable for medium-large models (40-70B)")
+            print("   Examples: Llama 2 70B, Falcon 40B")
+        elif max_params >= 20:
+            print("💪 VERY GOOD: Suitable for medium models (20-40B)")
+            print("   Examples: Llama 2 30B, Claude Sonnet")
+        elif max_params >= 10:
+            print("👍 GOOD: Suitable for small-medium models (10-20B)")
+            print("   Examples: Llama 2 13B, MPT 30B")
+        else:
+            print("👌 FAIR: Suitable for base models (<10B)")
+            print("   Examples: Mistral 7B, Phi-2")
     
     # Save results to file
     results["system_info"] = system_info
