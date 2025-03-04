@@ -35,9 +35,8 @@ The benchmark will:
 - Internet connection to download dependencies
 
 For optimal performance in the UOMI Network, we recommend:
-- NVIDIA RTX 3090 / 4090 or better (minimum score: 800)
-- 24GB+ VRAM
-- PCIe 4.0 interface
+- 2 x NVIDIA RTX 4090 or better ( score: 800)
+- 48GB+ VRAM
 
 ## Scoring System
 
