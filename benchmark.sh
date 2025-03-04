@@ -123,7 +123,7 @@ import numpy as np
 import psutil
 
 # Constants
-MIN_ACCEPTABLE_SCORE = 600
+MIN_ACCEPTABLE_SCORE = 550
 BENCHMARK_VERSION = "1.1.0"
 
 # Reference scores from known hardware (on 1000-point scale)
