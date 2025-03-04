@@ -1,6 +1,6 @@
 #!/bin/bash
 # =========================================================
-# GPU Benchmark for UOMI Network
+# GPU Benchmark for UOMI Network - Extended Scale
 # A simple script to evaluate GPUs for AI inference
 # Usage: curl -sSL https://raw.githubusercontent.com/uomi-network/gpu-benchmark/main/benchmark.sh | bash
 # =========================================================
@@ -11,7 +11,7 @@ echo "🚀 GPU Benchmark for UOMI Network"
 echo "========================================"
 
 # Settings
-MIN_ACCEPTABLE_SCORE=80
+MIN_ACCEPTABLE_SCORE=800
 TMP_DIR=$(mktemp -d)
 PYTHON_SCRIPT="${TMP_DIR}/benchmark.py"
 VENV_DIR="${TMP_DIR}/venv"
@@ -106,10 +106,11 @@ create_benchmark_script() {
   cat > "${PYTHON_SCRIPT}" << 'EOF'
 #!/usr/bin/env python3
 """
-GPU Benchmark for UOMI Network
+GPU Benchmark for UOMI Network - Extended Scale
 ------------------------------------------
 This script tests the GPU to determine if it's suitable
-for inference in UOMI network.
+for inference in UOMI network, with an extended scoring scale
+to differentiate high-end hardware.
 """
 
 import os
@@ -122,8 +123,21 @@ import numpy as np
 import psutil
 
 # Constants
-MIN_ACCEPTABLE_SCORE = 50
-BENCHMARK_VERSION = "1.0.0"
+MIN_ACCEPTABLE_SCORE = 800
+BENCHMARK_VERSION = "1.1.0"
+
+# Reference scores from known hardware (on 1000-point scale)
+REFERENCE_SCORES = {
+    "RTX 3090": 750,     # Single RTX 3090
+    "RTX 4090": 920,     # Single RTX 4090
+    "2xRTX 4090": 1650,  # Dual RTX 4090
+    "A6000": 1000,       # Single A6000
+    "A100 40GB": 1300,   # Single A100 40GB
+    "A100 80GB": 1600,   # Single A100 80GB
+    "H100 PCIe": 2000,   # Single H100 PCIe
+    "H100 SXM5": 2400,   # Single H100 SXM5
+    "8xH100": 9500       # 8x H100 (DGX H100)
+}
 
 try:
     import torch
@@ -166,7 +180,7 @@ def get_system_info():
     return system_info
 
 def benchmark_gpu():
-    """Run the GPU benchmark, if available"""
+    """Run the GPU benchmark, with extended scale"""
     print("🔥 Running GPU benchmark...")
     
     if not torch.cuda.is_available():
@@ -200,8 +214,8 @@ def benchmark_gpu():
         total_gpu_memory += gpu_memory
 
         # Test tensor calculations on GPU with increasing dimensions
-        tensor_sizes = [2000, 4000, 8000, 12000, 16000]
-        iterations = 5  # Reduced for faster testing
+        tensor_sizes = [2000, 4000, 8000, 16000, 24000, 32000]
+        iterations = 3  # Reduced for faster testing
         
         # Track best performance for this GPU
         gpu_best_tflops = 0
@@ -289,20 +303,22 @@ def benchmark_gpu():
         # Single GPU - use its TFLOPS directly
         combined_tflops = best_tflops
 
-    # Calculate GPU score
+    # Calculate GPU score on a 1000-point scale (instead of 100)
+    # This provides more granularity for high-end systems
     if size_results:
-        # Reference values calibrated to give A100 and 2x4090 comparable scores
-        reference_tflops = 40.0  # Higher reference for proper scaling
-        reference_memory = 40.0  # Reference memory (40GB like A100 or 2x4090)
+        # Reference values calibrated for extended scale
+        # These values place an H100 around 2000-2400 points
+        reference_tflops = 100.0  # Reference for max computation score
+        reference_memory = 80.0   # Reference for max memory score (like A100 80GB)
         
-        # Score components
-        # For performance, use combined_tflops which accounts for multi-GPU properly
-        perf_score = min(70, (combined_tflops / reference_tflops) * 70)
+        # Performance score (700 max points)
+        perf_score = min(700, (combined_tflops / reference_tflops) * 700)
         
-        # For memory, use total available memory across all GPUs
-        mem_score = min(30, (total_gpu_memory / reference_memory) * 30)
+        # Memory score (300 max points)
+        mem_score = min(300, (total_gpu_memory / reference_memory) * 300)
         
-        gpu_score = perf_score + mem_score
+        # Total score (1000-point scale)
+        gpu_score = round(perf_score + mem_score)
     else:
         gpu_score = 0
 
@@ -324,9 +340,13 @@ def benchmark_gpu():
         estimated_max_params = int(raw_estimated_params * scaling_factor)
     else:
         estimated_max_params = int(raw_estimated_params)  # In billions
+    
+    # Add card tier information
+    tier = get_card_tier(gpu_score)
 
     # Final results
     results["gpu_score"] = gpu_score
+    results["tier"] = tier
     results["raw_metrics"] = {
         "gpu": {
             "best_single_tflops": best_tflops,
@@ -342,7 +362,8 @@ def benchmark_gpu():
         }
     }
     
-    print(f"📊 GPU SCORE: {gpu_score:.2f}/100")
+    print(f"\n📊 GPU SCORE: {gpu_score}/1000")
+    print(f"🏆 TIER: {tier}")
     print(f"💾 Total GPU Memory: {total_gpu_memory:.2f} GB")
     
     if gpu_count > 1:
@@ -353,10 +374,42 @@ def benchmark_gpu():
         
     print(f"🧠 Estimated LLM Parameters: up to {estimated_max_params}B")
     
+    # Reference comparison
+    print("\n🔍 REFERENCE COMPARISON:")
+    for card, score in sorted(REFERENCE_SCORES.items(), key=lambda x: x[1]):
+        comparison = ""
+        if gpu_score > score * 1.1:
+            comparison = "✓ Your system outperforms"
+        elif gpu_score < score * 0.9:
+            comparison = "✗ Your system scores lower"
+        else:
+            comparison = "≈ Similar performance"
+            
+        print(f"  {card}: {score} points - {comparison}")
+    
     return results
 
+def get_card_tier(score):
+    """Get the tier classification based on the score"""
+    if score >= 2000:
+        return "S+ (Data Center)"
+    elif score >= 1600:
+        return "S (Professional)"
+    elif score >= 1200:
+        return "A+ (High-End)"
+    elif score >= 900:
+        return "A (Premium)"
+    elif score >= 700:
+        return "B+ (Performance)"
+    elif score >= 500:
+        return "B (Mainstream)"
+    elif score >= 300:
+        return "C (Entry)"
+    else:
+        return "D (Minimal)"
+
 def check_gpu_specs():
-    """Check if any GPU meets minimum requirements (RTX 3090 or better)"""
+    """Check if any GPU meets minimum requirements"""
     if not torch.cuda.is_available():
         return False
     
@@ -365,13 +418,13 @@ def check_gpu_specs():
     for i in range(torch.cuda.device_count()):
         props = torch.cuda.get_device_properties(i)
         memory_gb = props.total_memory / (1024**3)
-        if memory_gb >= 20:  # Min 20 GB of memory (more permissive)
+        if memory_gb >= 16:  # More permissive minimum (16GB)
             has_sufficient_gpu = True
             break
     
     if not has_sufficient_gpu:
-        print("❌ No GPU with sufficient memory (min 20 GB required)")
-        print("ℹ️ This benchmark is optimized for RTX 3090/4090 or better")
+        print("❌ No GPU with sufficient memory (min 16 GB required)")
+        print("ℹ️ This benchmark targets RTX 3090/4090 or better GPUs")
         return False
     
     return True
@@ -416,10 +469,11 @@ def main():
     # Determine acceptability
     is_acceptable = results["gpu_score"] >= MIN_ACCEPTABLE_SCORE
     total_score = results["gpu_score"]
+    tier = results["tier"]
     
     # Show final result
     print("\n" + "="*50)
-    print(f"🏁 FINAL RESULT: {total_score:.2f}/100")
+    print(f"🏁 FINAL RESULT: {total_score}/1000 - TIER {tier}")
     
     if is_acceptable:
         print("✅ HARDWARE ACCEPTED for UOMI network")
@@ -437,20 +491,26 @@ def main():
         # Classification based on estimated parameters
         max_params = metrics.get("estimated_max_params_billions", 0)
         
-        if max_params >= 70:
-            print("🌟 EXCELLENT: Suitable for large models (70B+)")
+        if max_params >= 180:
+            print("🌠 SUPERB: Capable of running the largest models (180B+)")
+            print("   Examples: BLOOM 176B, GPT-3 175B")
+        elif max_params >= 100:
+            print("🌟 EXCELLENT: Suitable for very large models (100-180B)")
+            print("   Examples: Llama 2 70B with high throughput")
+        elif max_params >= 70:
+            print("✨ GREAT: Suitable for large models (70-100B)")
             print("   Examples: Claude Opus, GPT-4, Llama 2 70B")
         elif max_params >= 40:
-            print("✨ GREAT: Suitable for medium-large models (40-70B)")
-            print("   Examples: Llama 2 70B, Falcon 40B")
+            print("💪 VERY GOOD: Suitable for medium-large models (40-70B)")
+            print("   Examples: Falcon 40B, Llama 2 70B (reduced quantization)")
         elif max_params >= 20:
-            print("💪 VERY GOOD: Suitable for medium models (20-40B)")
+            print("👍 GOOD: Suitable for medium models (20-40B)")
             print("   Examples: Llama 2 30B, Claude Sonnet")
         elif max_params >= 10:
-            print("👍 GOOD: Suitable for small-medium models (10-20B)")
-            print("   Examples: Llama 2 13B, MPT 30B")
+            print("👌 FAIR: Suitable for small-medium models (10-20B)")
+            print("   Examples: Llama 2 13B, MPT 30B (quantized)")
         else:
-            print("👌 FAIR: Suitable for base models (<10B)")
+            print("😐 BASIC: Suitable for small models (<10B)")
             print("   Examples: Mistral 7B, Phi-2")
     
     # Save results to file
